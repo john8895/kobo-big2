@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>大老二</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #fff; color: #000; font-family: sans-serif; padding: 8px; }
+h2 { font-size: 22px; border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 8px; }
+#msg { border: 2px solid #000; padding: 6px 8px; font-size: 15px; margin-bottom: 8px; min-height: 40px; }
+.ai-box { border: 1px solid #888; padding: 5px 8px; margin-bottom: 5px; font-size: 15px; }
+.ai-box.active { border-width: 3px; border-color: #000; font-weight: bold; }
+#pile-area { border: 2px solid #000; padding: 8px; margin-bottom: 8px; min-height: 58px; }
+#pile-lbl { font-size: 13px; color: #444; margin-bottom: 4px; }
+.pile-cards { white-space: nowrap; }
+.sm { display: inline-block; width: 38px; height: 56px; margin: 2px; font-size: 12px; font-weight: bold; text-align: center; padding: 3px 1px; vertical-align: top; line-height: 1.3; }
+.hand { white-space: nowrap; overflow-x: auto; padding: 4px 0; margin-bottom: 8px; }
+.card { display: inline-block; width: 48px; height: 72px; margin: 2px; font-size: 13px; font-weight: bold; text-align: center; padding: 5px 2px; cursor: pointer; line-height: 1.3; vertical-align: top; }
+.card.sel { background: #000; color: #fff; }
+/* Suit styles */
+.ss { border: 3px solid #000; }
+.hs { border: 3px dashed #000; }
+.ds { border: 3px dotted #000; }
+.cs { border: 4px double #000; }
+#hint { font-size: 13px; color: #444; min-height: 18px; margin-bottom: 6px; }
+.btns button { font-size: 17px; padding: 10px 20px; margin: 3px; border: 2px solid #000; background: #fff; cursor: pointer; }
+.btns button:disabled { opacity: 0.35; cursor: default; }
+</style>
+</head>
+<body>
+<h2>大老二</h2>
+<div id="msg"></div>
+<div id="ai-wrap"></div>
+
+<div id="pile-area">
+  <div id="pile-lbl">牌堆（空）</div>
+  <div id="pile-cards" class="pile-cards"></div>
+</div>
+
+<div id="p-hand-lbl" style="font-size:14px;margin-bottom:4px;"></div>
+<div id="hand" class="hand"></div>
+<div id="hint"></div>
+<div class="btns">
+  <button id="btn-play" onclick="playerPlay()">出牌</button>
+  <button id="btn-pass" onclick="playerPass()">Pass</button>
+  <button onclick="startGame()" style="margin-left:10px;">重開</button>
+</div>
+
+<script>
+// Rank: 0=3, 1=4, ..., 10=K, 11=A, 12=2
+// Suit: 0=C(♣), 1=D(♦), 2=H(♥), 3=S(♠)
+// Card value v = r*4 + s  (0=3C lowest, 51=2S highest)
+
+var RSYM = ['3','4','5','6','7','8','9','10','J','Q','K','A','2'];
+var SSYM = ['C','D','H','S'];
+var SCLS = ['cs','ds','hs','ss']; // class per suit
+
+// Hand type constants
+var T1=1, T2=2, T3=3, TST=4, TFL=5, TFH=6, TF4=7, TSF=8;
+
+var G;
+
+function mk(r,s){ return {r:r,s:s,v:r*4+s}; }
+
+function buildDeck(){
+  var d=[],r,s;
+  for(r=0;r<13;r++) for(s=0;s<4;s++) d.push(mk(r,s));
+  return d;
+}
+
+function shuffle(a){
+  var i,j,t;
+  for(i=a.length-1;i>0;i--){ j=Math.floor(Math.random()*(i+1)); t=a[i];a[i]=a[j];a[j]=t; }
+}
+
+function sortHand(h){ h.sort(function(a,b){return a.v-b.v;}); }
+
+function cLbl(c){ return RSYM[c.r]+SSYM[c.s]; }
+
+// Classify a hand; returns {type, str} or null
+function classify(cards){
+  var n=cards.length;
+  if(n<1||n>5||n===4) return null;
+  var s=cards.slice().sort(function(a,b){return a.v-b.v;});
+  if(n===1) return {type:T1, str:s[0].v};
+  if(n===2){
+    if(s[0].r===s[1].r) return {type:T2, str:s[1].v};
+    return null;
+  }
+  if(n===3){
+    if(s[0].r===s[1].r&&s[1].r===s[2].r) return {type:T3, str:s[2].v};
+    return null;
+  }
+  // n===5
+  return classifyFive(s);
+}
+
+function classifyFive(s){ // s sorted by v
+  var i, r=[], su=[], freq={}, fv=[], rk;
+  for(i=0;i<5;i++){ r.push(s[i].r); su.push(s[i].s); }
+
+  var isFlush = su[0]===su[1]&&su[1]===su[2]&&su[2]===su[3]&&su[3]===su[4];
+  var isStraight = true;
+  for(i=1;i<5;i++){ if(r[i]!==r[i-1]+1){isStraight=false;break;} }
+  if(r[4]===12) isStraight=false; // 2 cannot be in straight
+
+  for(i=0;i<5;i++) freq[r[i]]=(freq[r[i]]||0)+1;
+  for(rk in freq) fv.push(freq[rk]);
+  fv.sort(function(a,b){return b-a;});
+  var highV=s[4].v;
+
+  if(isFlush&&isStraight) return {type:TSF, str:highV};
+  if(fv[0]===4){
+    var qr=0; for(rk in freq){ if(freq[rk]===4) qr=parseInt(rk); }
+    return {type:TF4, str:qr*4+3};
+  }
+  if(fv[0]===3&&fv[1]===2){
+    var tr=0; for(rk in freq){ if(freq[rk]===3) tr=parseInt(rk); }
+    return {type:TFH, str:tr*4+3};
+  }
+  if(isFlush) return {type:TFL, str:highV};
+  if(isStraight) return {type:TST, str:highV};
+  return null;
+}
+
+function beats(nh,ch){
+  if(!nh||!ch) return false;
+  if(ch.type<=3) return nh.type===ch.type && nh.str>ch.str;
+  if(nh.type<4) return false;
+  if(nh.type>ch.type) return true;
+  if(nh.type===ch.type) return nh.str>ch.str;
+  return false;
+}
+
+function handName(h){
+  if(!h) return '';
+  var n=['','單張','對子','三條','順子','同花','葫蘆','鐵支','同花順'];
+  return n[h.type]||'';
+}
+
+// ---- Render ----
+
+function setMsg(s){ document.getElementById('msg').textContent=s; }
+
+function renderAI(){
+  var wrap=document.getElementById('ai-wrap'), i;
+  wrap.innerHTML='';
+  for(i=1;i<=3;i++){
+    var div=document.createElement('div');
+    div.className='ai-box'+(G.turn===i?' active':'');
+    div.textContent='電腦'+(i)+': '+G.hands[i].length+' 張'+(G.passed[i]?' [Pass]':'');
+    wrap.appendChild(div);
+  }
+}
+
+function renderPile(){
+  var lbl=document.getElementById('pile-lbl');
+  var area=document.getElementById('pile-cards');
+  area.innerHTML='';
+  if(!G.pile){
+    lbl.textContent='牌堆（空）- 可自由出牌'; return;
+  }
+  var pnames=['你','電腦1','電腦2','電腦3'];
+  lbl.textContent=pnames[G.pile.by]+'出的：'+handName(G.pile.hand);
+  for(var i=0;i<G.pile.cards.length;i++){
+    var c=G.pile.cards[i];
+    var div=document.createElement('div');
+    div.className='sm '+SCLS[c.s];
+    div.textContent=cLbl(c);
+    area.appendChild(div);
+  }
+}
+
+function renderHand(){
+  var hand=G.hands[0];
+  document.getElementById('p-hand-lbl').textContent='你的手牌 '+hand.length+' 張：';
+  var el=document.getElementById('hand');
+  el.innerHTML='';
+  var active=(G.turn===0&&G.phase==='play');
+  for(var i=0;i<hand.length;i++){
+    (function(idx){
+      var c=hand[idx];
+      var div=document.createElement('div');
+      div.className='card '+SCLS[c.s]+(G.sel[idx]?' sel':'');
+      div.textContent=cLbl(c);
+      if(active) div.onclick=function(){ G.sel[idx]=!G.sel[idx]; renderHand(); updateHint(); };
+      el.appendChild(div);
+    })(i);
+  }
+  document.getElementById('btn-play').disabled=!(active);
+  var canPass=active&&G.pile&&G.pile.by!==0;
+  document.getElementById('btn-pass').disabled=!canPass;
+}
+
+function updateHint(){
+  var sel=getSelected();
+  if(!sel.length){ document.getElementById('hint').textContent=''; return; }
+  var h=classify(sel);
+  var txt=h?handName(h)+' ✓':'無效組合 ✗';
+  if(h&&G.pile&&!beats(h,G.pile.hand)) txt+=' (不夠大)';
+  document.getElementById('hint').textContent=txt;
+}
+
+function render(){ renderPile(); renderAI(); renderHand(); updateHint(); }
+
+// ---- Game logic ----
+
+function startGame(){
+  var deck=buildDeck(); shuffle(deck);
+  var hands=[[],[],[],[]], i,j,starter=0;
+  for(i=0;i<13;i++) for(j=0;j<4;j++) hands[j].push(deck[i*4+j]);
+  for(j=0;j<4;j++) sortHand(hands[j]);
+
+  // Find 3C (v=0)
+  find: for(j=0;j<4;j++) for(i=0;i<hands[j].length;i++) if(hands[j][i].v===0){starter=j;break find;}
+
+  G={hands:hands, pile:null, turn:starter, passed:[false,false,false,false],
+     sel:[], phase:'play', firstTurn:true};
+  for(i=0;i<hands[0].length;i++) G.sel.push(false);
+
+  var pnames=['你','電腦1','電腦2','電腦3'];
+  setMsg(pnames[starter]+'持有 3C，先出牌，必須包含 3C。');
+  render();
+  if(starter!==0) setTimeout(aiGo,900);
+}
+
+function getSelected(){
+  var c=[];
+  for(var i=0;i<G.hands[0].length;i++) if(G.sel[i]) c.push(G.hands[0][i]);
+  return c;
+}
+
+function removeFrom(playerIdx, cards){
+  var hand=G.hands[playerIdx], i,ci;
+  for(ci=0;ci<cards.length;ci++)
+    for(i=0;i<hand.length;i++) if(hand[i].v===cards[ci].v){hand.splice(i,1);break;}
+}
+
+function doPlay(playerIdx, cards){
+  var h=classify(cards);
+  if(!h) return false;
+  if(G.pile&&!beats(h,G.pile.hand)) return false;
+  if(G.firstTurn){
+    var has=false;
+    for(var i=0;i<cards.length;i++) if(cards[i].v===0){has=true;break;}
+    if(!has) return false;
+  }
+  G.pile={cards:cards.slice(),hand:h,by:playerIdx};
+  removeFrom(playerIdx,cards);
+  G.passed=[false,false,false,false];
+  G.firstTurn=false;
+  return true;
+}
+
+function checkWin(p){
+  if(G.hands[p].length===0){
+    var nm=['你贏了！','電腦1贏了','電腦2贏了','電腦3贏了'];
+    setMsg(nm[p]+' 遊戲結束，按重開再玩一局。');
+    G.phase='gameover'; render(); return true;
+  }
+  return false;
+}
+
+function nextTurn(from){
+  var passCount=0, i;
+  for(i=0;i<4;i++) if(G.passed[i]) passCount++;
+  if(passCount>=3){
+    var leader=G.pile.by;
+    G.pile=null; G.passed=[false,false,false,false]; G.turn=leader;
+    var nm=['你','電腦1','電腦2','電腦3'];
+    setMsg(nm[leader]+' 重新出牌。'); render();
+    if(leader!==0) setTimeout(aiGo,800);
+    return;
+  }
+  G.turn=(from+1)%4;
+  if(G.turn!==0){ render(); setTimeout(aiGo,700); }
+  else { setMsg('你的回合。'); render(); }
+}
+
+function playerPlay(){
+  if(G.phase!=='play'||G.turn!==0) return;
+  var sel=getSelected();
+  if(!sel.length){ setMsg('請先點選要出的牌。'); return; }
+  if(G.firstTurn){
+    var has=false;
+    for(var i=0;i<sel.length;i++) if(sel[i].v===0){has=true;break;}
+    if(!has){ setMsg('第一手必須包含 3C！'); return; }
+  }
+  if(!doPlay(0,sel)){ setMsg('無效出牌或不夠大，請重選。'); return; }
+  G.sel=[];
+  for(var j=0;j<G.hands[0].length;j++) G.sel.push(false);
+  if(checkWin(0)) return;
+  setMsg('你出了：'+sel.map(cLbl).join(' ')+' ('+handName(G.pile.hand)+')');
+  nextTurn(0);
+}
+
+function playerPass(){
+  if(G.phase!=='play'||G.turn!==0) return;
+  if(!G.pile||G.pile.by===0){ setMsg('沒有牌堆，不能 Pass。'); return; }
+  G.passed[0]=true;
+  setMsg('你 Pass 了。'); nextTurn(0);
+}
+
+// ---- AI ----
+
+function aiBestPlay(p){
+  var hand=G.hands[p], n=hand.length, cur=G.pile?G.pile.hand:null;
+  var i,j,k,l,m,cards,h,best=null,bestStr=Infinity;
+
+  if(G.firstTurn){
+    // Must include 3C as single
+    for(i=0;i<n;i++) if(hand[i].v===0) return [hand[i]];
+  }
+
+  if(!cur){
+    // Lead: play lowest single
+    return [hand[0]];
+  }
+
+  var ct=cur.type;
+
+  if(ct===T1){
+    for(i=0;i<n;i++){
+      h=classify([hand[i]]);
+      if(h&&beats(h,cur)&&h.str<bestStr){best=[hand[i]];bestStr=h.str;}
+    }
+  } else if(ct===T2){
+    for(i=0;i<n-1;i++) for(j=i+1;j<n;j++){
+      cards=[hand[i],hand[j]]; h=classify(cards);
+      if(h&&beats(h,cur)&&h.str<bestStr){best=[hand[i],hand[j]];bestStr=h.str;}
+    }
+  } else if(ct===T3){
+    for(i=0;i<n-2;i++) for(j=i+1;j<n-1;j++) for(k=j+1;k<n;k++){
+      cards=[hand[i],hand[j],hand[k]]; h=classify(cards);
+      if(h&&beats(h,cur)&&h.str<bestStr){best=cards.slice();bestStr=h.str;}
+    }
+  } else {
+    for(i=0;i<n-4;i++) for(j=i+1;j<n-3;j++) for(k=j+1;k<n-2;k++) for(l=k+1;l<n-1;l++) for(m=l+1;m<n;m++){
+      cards=[hand[i],hand[j],hand[k],hand[l],hand[m]];
+      h=classifyFive(cards.slice().sort(function(a,b){return a.v-b.v;}));
+      if(h&&beats(h,cur)&&h.str<bestStr){best=cards.slice();bestStr=h.str;}
+    }
+  }
+  return best;
+}
+
+function aiGo(){
+  if(G.phase!=='play'||G.turn===0) return;
+  var p=G.turn, pnames=['你','電腦1','電腦2','電腦3'];
+  var played=aiBestPlay(p);
+  if(!played){
+    G.passed[p]=true;
+    setMsg(pnames[p]+' Pass。'); nextTurn(p); return;
+  }
+  if(!doPlay(p,played)){ G.passed[p]=true; setMsg(pnames[p]+' Pass。'); nextTurn(p); return; }
+  if(checkWin(p)) return;
+  setMsg(pnames[p]+'出了：'+played.map(cLbl).join(' ')+' ('+handName(G.pile.hand)+')');
+  nextTurn(p);
+}
+
+startGame();
+</script>
+</body>
+</html>
